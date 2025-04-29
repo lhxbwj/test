@@ -1,66 +1,97 @@
 import os
 import csv
 import io
-from flask import Flask, jsonify, request, Response, abort
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import json
 
-app = Flask(__name__)
+DEVICE_NAME = os.environ.get("DEVICE_NAME", "1")
+DEVICE_MODEL = os.environ.get("DEVICE_MODEL", "1")
+DEVICE_MANUFACTURER = os.environ.get("DEVICE_MANUFACTURER", "1")
+DEVICE_TYPE = os.environ.get("DEVICE_TYPE", "1")
+PRIMARY_PROTOCOL = os.environ.get("PRIMARY_PROTOCOL", "1")
 
-# Configuration from environment variables
-DEVICE_IP = os.environ.get('DEVICE_IP', '127.0.0.1')
-DEVICE_PORT = int(os.environ.get('DEVICE_PORT', '9000'))
-SERVER_HOST = os.environ.get('SERVER_HOST', '0.0.0.0')
-SERVER_PORT = int(os.environ.get('SERVER_PORT', '8080'))
+SERVER_HOST = os.environ.get("SERVER_HOST", "0.0.0.0")
+SERVER_PORT = int(os.environ.get("SERVER_PORT", "8080"))
 
-# Device meta
-DEVICE_INFO = {
-    "device_name": "1",
-    "device_model": "1",
-    "manufacturer": "1",
-    "device_type": "1",
-    "connection_protocol": "1"
+# Simulated device state and data
+device_state = {
+    "last_command": None,
+    "data_points": [
+        {"timestamp": "2024-06-01T12:00:00Z", "value": "23.5"},
+        {"timestamp": "2024-06-01T12:05:00Z", "value": "23.8"}
+    ]
 }
 
-# Simulated device state & data
-DEVICE_DATA = [
-    {"timestamp": "2024-06-01T12:00:00Z", "value": "23.1"},
-    {"timestamp": "2024-06-01T12:01:00Z", "value": "23.3"},
-]
-DEVICE_COMMAND_STATE = {}
+class DeviceHTTPRequestHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/info":
+            self.handle_info()
+        elif self.path == "/data":
+            self.handle_data()
+        else:
+            self.send_response(404)
+            self.end_headers()
+    
+    def do_POST(self):
+        if self.path == "/cmd":
+            self.handle_cmd()
+        else:
+            self.send_response(404)
+            self.end_headers()
+    
+    def handle_info(self):
+        info = {
+            "device_name": DEVICE_NAME,
+            "device_model": DEVICE_MODEL,
+            "manufacturer": DEVICE_MANUFACTURER,
+            "device_type": DEVICE_TYPE,
+            "primary_protocol": PRIMARY_PROTOCOL,
+        }
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(info).encode("utf-8"))
+    
+    def handle_data(self):
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["timestamp", "value"])
+        for row in device_state["data_points"]:
+            writer.writerow([row["timestamp"], row["value"]])
+        csv_bytes = output.getvalue().encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/csv")
+        self.send_header("Content-Disposition", "attachment; filename=data.csv")
+        self.end_headers()
+        self.wfile.write(csv_bytes)
+    
+    def handle_cmd(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except Exception:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(b"Invalid JSON payload")
+            return
+        command = payload.get("command")
+        if not command:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(b"Missing 'command' in payload")
+            return
+        device_state["last_command"] = command
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps({"status": "success", "received_command": command}).encode("utf-8"))
 
-def fetch_device_data_csv():
-    # In a real driver, replace this with actual protocol communication.
-    output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=DEVICE_DATA[0].keys())
-    writer.writeheader()
-    for row in DEVICE_DATA:
-        writer.writerow(row)
-    csv_data = output.getvalue()
-    output.close()
-    return csv_data
-
-def send_command_to_device(command):
-    # In a real driver, send the command over the configured protocol.
-    DEVICE_COMMAND_STATE["last_command"] = command
-    return {"result": "success", "echo": command}
-
-@app.route("/info", methods=["GET"])
-def device_info():
-    return jsonify(DEVICE_INFO)
-
-@app.route("/data", methods=["GET"])
-def device_data():
-    csv_data = fetch_device_data_csv()
-    return Response(csv_data, mimetype="text/csv")
-
-@app.route("/cmd", methods=["POST"])
-def device_cmd():
-    if not request.is_json:
-        abort(400, "Request must be JSON")
-    command = request.get_json()
-    if not isinstance(command, dict):
-        abort(400, "Command must be a JSON object")
-    result = send_command_to_device(command)
-    return jsonify(result)
+def run_server():
+    server = HTTPServer((SERVER_HOST, SERVER_PORT), DeviceHTTPRequestHandler)
+    print(f"HTTP server running at http://{SERVER_HOST}:{SERVER_PORT}/")
+    server.serve_forever()
 
 if __name__ == "__main__":
-    app.run(host=SERVER_HOST, port=SERVER_PORT, threaded=True)
+    run_server()
