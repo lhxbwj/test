@@ -1,115 +1,93 @@
 import os
 import csv
 import io
+import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
-import threading
 
-# Device configuration from environment variables
-DEVICE_IP = os.environ.get("DEVICE_IP", "127.0.0.1")
-DEVICE_PORT = int(os.environ.get("DEVICE_PORT", "9000"))
-SERVER_HOST = os.environ.get("SERVER_HOST", "0.0.0.0")
-SERVER_PORT = int(os.environ.get("SERVER_PORT", "8080"))
+# Environment Variables
+DEVICE_IP = os.getenv("DEVICE_IP", "127.0.0.1")
+DEVICE_PORT = int(os.getenv("DEVICE_PORT", "9000"))
+SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
+SERVER_PORT = int(os.getenv("SERVER_PORT", "8080"))
 
-# Dummy device properties (simulate a device with CSV data and command interface)
-DEVICE_INFO = {
-    "device_name": "1",
-    "device_model": "1",
-    "manufacturer": "1",
-    "device_type": "1",
-    "connection_info": {
-        "primary_protocol": "1",
-        "ip": DEVICE_IP,
-        "port": DEVICE_PORT
-    },
-    "key_characteristics": {
-        "data_points": "1",
-        "commands": "1"
-    },
-    "data_format": {
-        "format": "CSV"
-    }
-}
-
-# Simulated device state/data
-class DummyDevice:
-    def __init__(self):
-        self.state = {"value": 0}
-
-    def get_csv(self):
+# Dummy Device Data & Command Handling (Mock)
+# In a real scenario, replace with actual device communication logic.
+class DeviceConnection:
+    def __init__(self, ip, port):
+        self.ip = ip
+        self.port = port
+        self.data_points = [
+            {"timestamp": "2024-06-01T12:00:00Z", "value": "23.1"},
+            {"timestamp": "2024-06-01T12:01:00Z", "value": "23.2"},
+        ]
+        self.device_info = {
+            "device_name": "1",
+            "device_model": "1",
+            "manufacturer": "1",
+            "device_type": "1",
+            "connection_protocol": "1"
+        }
+        self.lock = threading.Lock()
+    
+    def read_csv_data(self):
         output = io.StringIO()
-        writer = csv.writer(output)
-        writer.writerow(self.state.keys())
-        writer.writerow(self.state.values())
+        writer = csv.DictWriter(output, fieldnames=["timestamp", "value"])
+        writer.writeheader()
+        for dp in self.data_points:
+            writer.writerow(dp)
         return output.getvalue()
+    
+    def execute_command(self, cmd):
+        # Simulate command execution and mutate data for demo
+        with self.lock:
+            self.data_points.append({"timestamp": "2024-06-01T12:02:00Z", "value": cmd.get("value", "unknown")})
+        return {"status": "success", "executed": cmd}
+    
+    def get_info(self):
+        return self.device_info
 
-    def send_command(self, command):
-        # Command is a dictionary
-        if "set_value" in command:
-            try:
-                self.state["value"] = int(command["set_value"])
-            except ValueError:
-                return {"status": "error", "message": "Invalid value"}
-            return {"status": "ok", "message": f"Value set to {self.state['value']}"}
-        return {"status": "error", "message": "Unknown command"}
+device = DeviceConnection(DEVICE_IP, DEVICE_PORT)
 
-device = DummyDevice()
-
-class RequestHandler(BaseHTTPRequestHandler):
+class IoTHTTPRequestHandler(BaseHTTPRequestHandler):
+    def _set_headers(self, status=200, content_type="application/json"):
+        self.send_response(status)
+        self.send_header("Content-type", content_type)
+        self.end_headers()
+    
     def do_GET(self):
         if self.path == "/info":
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            info = {
-                "device_name": DEVICE_INFO["device_name"],
-                "device_model": DEVICE_INFO["device_model"],
-                "manufacturer": DEVICE_INFO["manufacturer"],
-                "device_type": DEVICE_INFO["device_type"],
-                "connection_info": DEVICE_INFO["connection_info"]
-            }
-            self.wfile.write(json.dumps(info).encode())
+            self._set_headers()
+            info = device.get_info()
+            self.wfile.write(json.dumps(info).encode("utf-8"))
         elif self.path == "/data":
-            csv_data = device.get_csv()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/csv")
-            self.end_headers()
-            self.wfile.write(csv_data.encode())
+            csv_data = device.read_csv_data()
+            self._set_headers(content_type="text/csv")
+            self.wfile.write(csv_data.encode("utf-8"))
         else:
-            self.send_response(404)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": "Not found"}).encode())
-
+            self._set_headers(404)
+            self.wfile.write(json.dumps({"error": "Not found"}).encode("utf-8"))
+    
     def do_POST(self):
         if self.path == "/cmd":
             content_length = int(self.headers.get('Content-Length', 0))
-            raw_body = self.rfile.read(content_length)
+            body = self.rfile.read(content_length)
             try:
-                body = json.loads(raw_body)
+                cmd = json.loads(body)
             except Exception:
-                self.send_response(400)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(json.dumps({"status": "error", "message": "Invalid JSON"}).encode())
+                self._set_headers(400)
+                self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode("utf-8"))
                 return
-            result = device.send_command(body)
-            self.send_response(200 if result["status"] == "ok" else 400)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps(result).encode())
+            result = device.execute_command(cmd)
+            self._set_headers()
+            self.wfile.write(json.dumps(result).encode("utf-8"))
         else:
-            self.send_response(404)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": "Not found"}).encode())
-
-    def log_message(self, format, *args):
-        return  # Silence default logging
+            self._set_headers(404)
+            self.wfile.write(json.dumps({"error": "Not found"}).encode("utf-8"))
 
 def run_server():
-    server_address = (SERVER_HOST, SERVER_PORT)
-    httpd = HTTPServer(server_address, RequestHandler)
+    httpd = HTTPServer((SERVER_HOST, SERVER_PORT), IoTHTTPRequestHandler)
+    print(f"HTTP server running on {SERVER_HOST}:{SERVER_PORT}")
     httpd.serve_forever()
 
 if __name__ == "__main__":
