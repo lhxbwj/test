@@ -1,89 +1,78 @@
-```python
 import os
-from flask import Flask, request, jsonify, Response, stream_with_context
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import threading
-import queue
-import time
 
-# Device and Server configuration via environment variables
-DEVICE_IP = os.environ.get('DEVICE_IP', '127.0.0.1')
-DEVICE_PORT = int(os.environ.get('DEVICE_PORT', '9000'))
-SERVER_HOST = os.environ.get('SERVER_HOST', '0.0.0.0')
-SERVER_PORT = int(os.environ.get('SERVER_PORT', '8080'))
+DEVICE_IP = os.environ.get("DEVICE_IP", "127.0.0.1")
+DEVICE_PORT = int(os.environ.get("DEVICE_PORT", "9000"))
+SERVER_HOST = os.environ.get("SERVER_HOST", "0.0.0.0")
+SERVER_PORT = int(os.environ.get("SERVER_PORT", "8080"))
 
-app = Flask(__name__)
+class DeviceConnection:
+    def __init__(self, ip, port):
+        self.ip = ip
+        self.port = port
 
-# Mock device info (configurable if needed)
-DEVICE_INFO = {
-    "device_name": os.environ.get('DEVICE_NAME', '1'),
-    "device_model": os.environ.get('DEVICE_MODEL', '1'),
-    "manufacturer": os.environ.get('DEVICE_MANUFACTURER', '1'),
-    "device_type": os.environ.get('DEVICE_TYPE', '1')
-}
-
-# Thread-safe queue for data streaming
-data_queue = queue.Queue(maxsize=100)
-COMMAND_RESULT = {"last_command": None, "last_result": None}
-
-def device_reader():
-    """Continuously read data from the device and place it in the queue."""
-    import socket
-    while True:
-        try:
-            with socket.create_connection((DEVICE_IP, DEVICE_PORT), timeout=5) as s:
-                f = s.makefile('r')
-                while True:
-                    line = f.readline()
-                    if not line:
-                        break
-                    line = line.rstrip('\r\n')
-                    try:
-                        data_queue.put(line, timeout=0.5)
-                    except queue.Full:
-                        pass  # Drop data if queue is full
-        except Exception as e:
-            time.sleep(2)  # Retry after delay on failure
-
-# Start device reading in background thread
-threading.Thread(target=device_reader, daemon=True).start()
-
-@app.route('/info', methods=['GET'])
-def get_info():
-    return jsonify(DEVICE_INFO)
-
-@app.route('/cmd', methods=['POST'])
-def send_command():
-    cmd = request.json.get('command')
-    result = None
-    try:
+    def send_command(self, command):
         import socket
-        with socket.create_connection((DEVICE_IP, DEVICE_PORT), timeout=5) as s:
-            s.sendall((cmd+'\n').encode('utf-8'))
-            s.settimeout(2)
-            result = s.recv(4096).decode('utf-8')
-    except Exception as e:
-        result = f"Error: {str(e)}"
-    COMMAND_RESULT['last_command'] = cmd
-    COMMAND_RESULT['last_result'] = result
-    return jsonify({'command': cmd, 'response': result})
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(5)
+            s.connect((self.ip, self.port))
+            s.sendall(command.encode('utf-8'))
+            response = b""
+            while True:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+            return response.decode('utf-8')
 
-@app.route('/data', methods=['GET'])
-def stream_data():
-    def generate():
-        # Stream lines as Server-Sent Events (SSE) to allow browser/CLI consumption
-        while True:
-            try:
-                line = data_queue.get(timeout=5)
-                yield f"data: {line}\n\n"
-            except queue.Empty:
-                yield ": keep-alive\n\n"
-    headers = {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-    }
-    return Response(stream_with_context(generate()), headers=headers)
+    def get_data(self):
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(5)
+            s.connect((self.ip, self.port))
+            s.sendall(b"GET_DATA\n")
+            response = b""
+            while True:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+            return response.decode('utf-8')
 
-if __name__ == '__main__':
-    app.run(host=SERVER_HOST, port=SERVER_PORT, threaded=True)
-```
+device_conn = DeviceConnection(DEVICE_IP, DEVICE_PORT)
+
+class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
+    def _set_headers(self, status=200, content_type="text/plain"):
+        self.send_response(status)
+        self.send_header("Content-type", content_type)
+        self.end_headers()
+
+    def do_POST(self):
+        if self.path == "/cmd":
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            response = device_conn.send_command(body.strip())
+            self._set_headers(200)
+            self.wfile.write(response.encode('utf-8'))
+        else:
+            self._set_headers(404)
+            self.wfile.write(b"Not Found")
+
+    def do_GET(self):
+        if self.path == "/data":
+            response = device_conn.get_data()
+            self._set_headers(200)
+            self.wfile.write(response.encode('utf-8'))
+        else:
+            self._set_headers(404)
+            self.wfile.write(b"Not Found")
+
+def run_server():
+    server_address = (SERVER_HOST, SERVER_PORT)
+    httpd = HTTPServer(server_address, SimpleHTTPRequestHandler)
+    print(f"HTTP server running at http://{SERVER_HOST}:{SERVER_PORT}/")
+    httpd.serve_forever()
+
+if __name__ == "__main__":
+    run_server()
