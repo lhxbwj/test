@@ -1,87 +1,84 @@
 import os
-import xml.etree.ElementTree as ET
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import http.server
 import socketserver
+import xml.etree.ElementTree as ET
+from urllib.parse import urlparse, parse_qs
 import threading
 
-DEVICE_IP = os.environ.get("DEVICE_IP", "127.0.0.1")
-DEVICE_PORT = int(os.environ.get("DEVICE_PORT", "9000"))
-SERVER_HOST = os.environ.get("SERVER_HOST", "0.0.0.0")
-SERVER_PORT = int(os.environ.get("SERVER_PORT", "8080"))
+# Environment Variables
+DEVICE_IP = os.environ.get('DEVICE_IP', '127.0.0.1')
+DEVICE_PORT = int(os.environ.get('DEVICE_PORT', '9000'))
+SERVER_HOST = os.environ.get('SERVER_HOST', '0.0.0.0')
+SERVER_PORT = int(os.environ.get('SERVER_PORT', '8080'))
 
-class DeviceConnection:
-    def __init__(self, host, port):
-        self.host = host
-        self.port = port
-
-    def get_data(self):
-        # Simulate device connection and retrieve raw XML data.
-        # In real implementation, connect to the device with its protocol.
-        # Here, we just simulate with dummy XML.
-        data = {
-            "status": "OK",
-            "temperature": "23.1",
-            "humidity": "56"
+# Simulated device data and command handler
+class DeviceSimulator:
+    def __init__(self):
+        self.data_points = {
+            'temperature': '22.5',
+            'humidity': '45',
+            'status': 'OK'
         }
-        root = ET.Element("DeviceData")
-        for k, v in data.items():
-            ET.SubElement(root, k).text = v
-        return ET.tostring(root, encoding="utf-8")
+        self.commands_executed = []
 
-    def send_command(self, xml_command):
-        # Simulate sending command and getting response
-        # In a real implementation, send XML to device and get real response
-        try:
-            tree = ET.fromstring(xml_command)
-            cmd = tree.find('Command')
-            response_root = ET.Element("Response")
-            if cmd is not None:
-                ET.SubElement(response_root, "Result").text = f"Command '{cmd.text}' executed"
-                ET.SubElement(response_root, "Status").text = "Success"
-            else:
-                ET.SubElement(response_root, "Result").text = "No command found"
-                ET.SubElement(response_root, "Status").text = "Failed"
-            return ET.tostring(response_root, encoding="utf-8")
-        except Exception as e:
-            response_root = ET.Element("Response")
-            ET.SubElement(response_root, "Result").text = str(e)
-            ET.SubElement(response_root, "Status").text = "Error"
-            return ET.tostring(response_root, encoding="utf-8")
+    def get_data_xml(self):
+        root = ET.Element('DeviceData')
+        for k, v in self.data_points.items():
+            el = ET.SubElement(root, k)
+            el.text = v
+        return ET.tostring(root, encoding='utf-8', method='xml')
 
-device_conn = DeviceConnection(DEVICE_IP, DEVICE_PORT)
+    def execute_command(self, cmd):
+        self.commands_executed.append(cmd)
+        # Simulate command effect
+        if cmd.get('action') == 'set_temperature':
+            self.data_points['temperature'] = cmd.get('value', self.data_points['temperature'])
+        elif cmd.get('action') == 'set_humidity':
+            self.data_points['humidity'] = cmd.get('value', self.data_points['humidity'])
+        elif cmd.get('action') == 'reset_status':
+            self.data_points['status'] = 'OK'
+        return "<Response>Command Executed</Response>"
 
-class Handler(BaseHTTPRequestHandler):
+device_sim = DeviceSimulator()
+
+class IoTDeviceHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
+    def _set_headers(self, status=200, content_type="application/xml"):
+        self.send_response(status)
+        self.send_header("Content-type", content_type)
+        self.end_headers()
+
     def do_GET(self):
-        if self.path == "/data":
-            self.send_response(200)
-            self.send_header("Content-Type", "application/xml")
-            self.end_headers()
-            xml_data = device_conn.get_data()
+        parsed_path = urlparse(self.path)
+        if parsed_path.path == '/data':
+            # Proxy data from device and return as XML
+            xml_data = device_sim.get_data_xml()
+            self._set_headers(200, "application/xml")
             self.wfile.write(xml_data)
         else:
-            self.send_response(404)
-            self.end_headers()
+            self.send_error(404, "Not Found")
 
     def do_POST(self):
-        if self.path == "/cmd":
+        parsed_path = urlparse(self.path)
+        if parsed_path.path == '/cmd':
             content_length = int(self.headers.get('Content-Length', 0))
-            post_data = self.rfile.read(content_length)
-            response_xml = device_conn.send_command(post_data)
-            self.send_response(200)
-            self.send_header("Content-Type", "application/xml")
-            self.end_headers()
-            self.wfile.write(response_xml)
+            post_body = self.rfile.read(content_length)
+            try:
+                # Expect XML command
+                cmd_xml = ET.fromstring(post_body)
+                cmd_dict = {child.tag: child.text for child in cmd_xml}
+                response_xml = device_sim.execute_command(cmd_dict)
+                self._set_headers(200, "application/xml")
+                self.wfile.write(response_xml.encode('utf-8'))
+            except Exception as e:
+                self._set_headers(400, "application/xml")
+                self.wfile.write(f"<Error>Invalid Command: {e}</Error>".encode('utf-8'))
         else:
-            self.send_response(404)
-            self.end_headers()
-
-    def log_message(self, format, *args):
-        return  # Suppress default logging
+            self.send_error(404, "Not Found")
 
 def run_server():
-    server = HTTPServer((SERVER_HOST, SERVER_PORT), Handler)
-    print(f"Serving HTTP on {SERVER_HOST}:{SERVER_PORT}")
-    server.serve_forever()
+    with socketserver.ThreadingTCPServer((SERVER_HOST, SERVER_PORT), IoTDeviceHTTPRequestHandler) as httpd:
+        print(f"HTTP server running on {SERVER_HOST}:{SERVER_PORT}")
+        httpd.serve_forever()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     run_server()
