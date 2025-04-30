@@ -1,84 +1,74 @@
 import os
-import http.server
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import socketserver
+import urllib.parse
 import xml.etree.ElementTree as ET
-from urllib.parse import urlparse, parse_qs
-import threading
 
-# Environment Variables
 DEVICE_IP = os.environ.get('DEVICE_IP', '127.0.0.1')
-DEVICE_PORT = int(os.environ.get('DEVICE_PORT', '9000'))
+DEVICE_PORT = int(os.environ.get('DEVICE_PORT', '8080'))
 SERVER_HOST = os.environ.get('SERVER_HOST', '0.0.0.0')
-SERVER_PORT = int(os.environ.get('SERVER_PORT', '8080'))
+SERVER_PORT = int(os.environ.get('SERVER_PORT', '8000'))
 
-# Simulated device data and command handler
-class DeviceSimulator:
-    def __init__(self):
-        self.data_points = {
-            'temperature': '22.5',
-            'humidity': '45',
-            'status': 'OK'
-        }
-        self.commands_executed = []
+# Simulated device logic (replace with actual protocol/transport if needed)
+def get_device_data():
+    # Simulate XML data from device
+    root = ET.Element("DeviceData")
+    ET.SubElement(root, "Status").text = "OK"
+    ET.SubElement(root, "Temperature").text = "25"
+    ET.SubElement(root, "Humidity").text = "60"
+    return ET.tostring(root, encoding='utf-8', method='xml')
 
-    def get_data_xml(self):
-        root = ET.Element('DeviceData')
-        for k, v in self.data_points.items():
-            el = ET.SubElement(root, k)
-            el.text = v
-        return ET.tostring(root, encoding='utf-8', method='xml')
+def send_device_command(cmd_xml):
+    # Simulate command acceptance
+    try:
+        root = ET.fromstring(cmd_xml)
+        response = ET.Element("CommandResponse")
+        ET.SubElement(response, "Status").text = "Accepted"
+        ET.SubElement(response, "Received").append(root)
+        return ET.tostring(response, encoding='utf-8', method='xml')
+    except Exception as e:
+        response = ET.Element("CommandResponse")
+        ET.SubElement(response, "Status").text = "Error"
+        ET.SubElement(response, "Error").text = str(e)
+        return ET.tostring(response, encoding='utf-8', method='xml')
 
-    def execute_command(self, cmd):
-        self.commands_executed.append(cmd)
-        # Simulate command effect
-        if cmd.get('action') == 'set_temperature':
-            self.data_points['temperature'] = cmd.get('value', self.data_points['temperature'])
-        elif cmd.get('action') == 'set_humidity':
-            self.data_points['humidity'] = cmd.get('value', self.data_points['humidity'])
-        elif cmd.get('action') == 'reset_status':
-            self.data_points['status'] = 'OK'
-        return "<Response>Command Executed</Response>"
-
-device_sim = DeviceSimulator()
-
-class IoTDeviceHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
-    def _set_headers(self, status=200, content_type="application/xml"):
-        self.send_response(status)
-        self.send_header("Content-type", content_type)
-        self.end_headers()
-
+class DeviceHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        parsed_path = urlparse(self.path)
-        if parsed_path.path == '/data':
-            # Proxy data from device and return as XML
-            xml_data = device_sim.get_data_xml()
-            self._set_headers(200, "application/xml")
-            self.wfile.write(xml_data)
+        parsed_path = urllib.parse.urlparse(self.path)
+        if parsed_path.path == "/data":
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/xml')
+            self.end_headers()
+            data = get_device_data()
+            self.wfile.write(data)
         else:
-            self.send_error(404, "Not Found")
+            self.send_response(404)
+            self.end_headers()
 
     def do_POST(self):
-        parsed_path = urlparse(self.path)
-        if parsed_path.path == '/cmd':
+        parsed_path = urllib.parse.urlparse(self.path)
+        if parsed_path.path == "/cmd":
             content_length = int(self.headers.get('Content-Length', 0))
-            post_body = self.rfile.read(content_length)
-            try:
-                # Expect XML command
-                cmd_xml = ET.fromstring(post_body)
-                cmd_dict = {child.tag: child.text for child in cmd_xml}
-                response_xml = device_sim.execute_command(cmd_dict)
-                self._set_headers(200, "application/xml")
-                self.wfile.write(response_xml.encode('utf-8'))
-            except Exception as e:
-                self._set_headers(400, "application/xml")
-                self.wfile.write(f"<Error>Invalid Command: {e}</Error>".encode('utf-8'))
+            post_data = self.rfile.read(content_length)
+            response = send_device_command(post_data)
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/xml')
+            self.end_headers()
+            self.wfile.write(response)
         else:
-            self.send_error(404, "Not Found")
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, format, *args):
+        return  # Suppress logging
+
+class ThreadedHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
+    daemon_threads = True
 
 def run_server():
-    with socketserver.ThreadingTCPServer((SERVER_HOST, SERVER_PORT), IoTDeviceHTTPRequestHandler) as httpd:
-        print(f"HTTP server running on {SERVER_HOST}:{SERVER_PORT}")
-        httpd.serve_forever()
+    server = ThreadedHTTPServer((SERVER_HOST, SERVER_PORT), DeviceHTTPRequestHandler)
+    print(f"Device HTTP driver running on {SERVER_HOST}:{SERVER_PORT}")
+    server.serve_forever()
 
 if __name__ == '__main__':
     run_server()
