@@ -1,61 +1,70 @@
+```python
 import os
+from flask import Flask, request, Response, jsonify
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
-import urllib.request
-import urllib.parse
+import requests
 
-DEVICE_HOST = os.environ.get('DEVICE_HOST', '127.0.0.1')
-DEVICE_PORT = int(os.environ.get('DEVICE_PORT', '8081'))
-DEVICE_DATA_PATH = os.environ.get('DEVICE_DATA_PATH', '/data')
-DEVICE_CMD_PATH = os.environ.get('DEVICE_CMD_PATH', '/cmd')
-SERVER_HOST = os.environ.get('SERVER_HOST', '0.0.0.0')
-SERVER_PORT = int(os.environ.get('SERVER_PORT', '8080'))
+DEVICE_IP = os.environ.get("DEVICE_IP", "127.0.0.1")
+DEVICE_PORT = int(os.environ.get("DEVICE_PORT", "9000"))
+SERVER_HOST = os.environ.get("SERVER_HOST", "0.0.0.0")
+SERVER_PORT = int(os.environ.get("SERVER_PORT", "8080"))
 
-class DeviceHTTPProxyHandler(BaseHTTPRequestHandler):
-    def _set_headers(self, status=200, content_type='application/xml'):
-        self.send_response(status)
-        self.send_header('Content-type', content_type)
-        self.end_headers()
+app = Flask(__name__)
 
-    def do_GET(self):
-        if self.path == '/data':
-            try:
-                url = f'http://{DEVICE_HOST}:{DEVICE_PORT}{DEVICE_DATA_PATH}'
-                with urllib.request.urlopen(url) as response:
-                    xml_data = response.read()
-                self._set_headers(200, 'application/xml')
-                self.wfile.write(xml_data)
-            except Exception as e:
-                self._set_headers(502, 'text/plain')
-                self.wfile.write(f'Failed to fetch device data: {str(e)}'.encode('utf-8'))
-        else:
-            self._set_headers(404, 'text/plain')
-            self.wfile.write(b'Not Found')
+DEVICE_INFO = {
+    "device_name": "1",
+    "device_model": "1",
+    "manufacturer": "1",
+    "device_type": "1",
+    "connection_info": {
+        "primary_protocol": "1",
+        "ip": DEVICE_IP,
+        "port": DEVICE_PORT
+    }
+}
 
-    def do_POST(self):
-        if self.path == '/cmd':
-            content_length = int(self.headers.get('Content-Length', 0))
-            post_data = self.rfile.read(content_length) if content_length > 0 else b''
-            try:
-                url = f'http://{DEVICE_HOST}:{DEVICE_PORT}{DEVICE_CMD_PATH}'
-                req = urllib.request.Request(url, data=post_data, method='POST')
-                req.add_header('Content-Type', 'application/xml')
-                with urllib.request.urlopen(req) as response:
-                    resp_data = response.read()
-                self._set_headers(200, 'application/xml')
-                self.wfile.write(resp_data)
-            except Exception as e:
-                self._set_headers(502, 'text/plain')
-                self.wfile.write(f'Failed to send command to device: {str(e)}'.encode('utf-8'))
-        else:
-            self._set_headers(404, 'text/plain')
-            self.wfile.write(b'Not Found')
+def get_device_data():
+    try:
+        url = f"http://{DEVICE_IP}:{DEVICE_PORT}/data"
+        resp = requests.get(url, timeout=5)
+        resp.raise_for_status()
+        return resp.text
+    except Exception as e:
+        return f"Error connecting to device: {str(e)}"
 
-def run_server():
-    server_address = (SERVER_HOST, SERVER_PORT)
-    httpd = HTTPServer(server_address, DeviceHTTPProxyHandler)
-    print(f"Starting HTTP server at {SERVER_HOST}:{SERVER_PORT}")
-    httpd.serve_forever()
+def send_device_command(cmd):
+    try:
+        url = f"http://{DEVICE_IP}:{DEVICE_PORT}/cmd"
+        resp = requests.post(url, data=cmd, timeout=5)
+        resp.raise_for_status()
+        return resp.text
+    except Exception as e:
+        return f"Error sending command to device: {str(e)}"
 
-if __name__ == '__main__':
-    run_server()
+@app.route("/info", methods=["GET"])
+def info():
+    return jsonify(DEVICE_INFO)
+
+@app.route("/data", methods=["GET"])
+def data():
+    def generate():
+        try:
+            url = f"http://{DEVICE_IP}:{DEVICE_PORT}/data"
+            with requests.get(url, stream=True, timeout=5) as r:
+                r.raise_for_status()
+                for chunk in r.iter_content(chunk_size=1024):
+                    if chunk:
+                        yield chunk
+        except Exception as e:
+            yield f"Error streaming data: {str(e)}\n"
+    return Response(generate(), mimetype="text/plain")
+
+@app.route("/cmd", methods=["POST"])
+def cmd():
+    cmd_data = request.get_data()
+    result = send_device_command(cmd_data)
+    return Response(result, mimetype="text/plain")
+
+if __name__ == "__main__":
+    app.run(host=SERVER_HOST, port=SERVER_PORT, threaded=True)
+```
