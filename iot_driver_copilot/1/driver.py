@@ -1,78 +1,65 @@
 import os
-from http.server import BaseHTTPRequestHandler, HTTPServer
-import threading
+import csv
+from io import StringIO
+from fastapi import FastAPI, Request, Response, status
+from fastapi.responses import StreamingResponse, JSONResponse, PlainTextResponse
+from pydantic import BaseModel
+import uvicorn
+import asyncio
 
+# Environment Variables
 DEVICE_IP = os.environ.get("DEVICE_IP", "127.0.0.1")
-DEVICE_PORT = int(os.environ.get("DEVICE_PORT", "9000"))
+DEVICE_PORT = int(os.environ.get("DEVICE_PORT", "12345"))
 SERVER_HOST = os.environ.get("SERVER_HOST", "0.0.0.0")
-SERVER_PORT = int(os.environ.get("SERVER_PORT", "8080"))
+SERVER_PORT = int(os.environ.get("SERVER_PORT", "8000"))
 
-class DeviceConnection:
-    def __init__(self, ip, port):
-        self.ip = ip
-        self.port = port
+# Simulated Device State (for demonstration)
+DEVICE_INFO = {
+    "device_name": "1",
+    "device_model": "1",
+    "manufacturer": "1",
+    "device_type": "1"
+}
+DEVICE_DATA_POINTS = ["temperature", "humidity", "pressure"]
+DEVICE_DATA = {
+    "temperature": "22.5",
+    "humidity": "55.0",
+    "pressure": "101.2"
+}
+SUPPORTED_COMMANDS = ["reset", "calibrate"]
 
-    def send_command(self, command):
-        import socket
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(5)
-            s.connect((self.ip, self.port))
-            s.sendall(command.encode('utf-8'))
-            response = b""
-            while True:
-                chunk = s.recv(4096)
-                if not chunk:
-                    break
-                response += chunk
-            return response.decode('utf-8')
+app = FastAPI()
 
-    def get_data(self):
-        import socket
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(5)
-            s.connect((self.ip, self.port))
-            s.sendall(b"GET_DATA\n")
-            response = b""
-            while True:
-                chunk = s.recv(4096)
-                if not chunk:
-                    break
-                response += chunk
-            return response.decode('utf-8')
+class CommandRequest(BaseModel):
+    command: str
+    params: dict = {}
 
-device_conn = DeviceConnection(DEVICE_IP, DEVICE_PORT)
+@app.get("/info")
+async def get_info():
+    return JSONResponse(content=DEVICE_INFO)
 
-class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
-    def _set_headers(self, status=200, content_type="text/plain"):
-        self.send_response(status)
-        self.send_header("Content-type", content_type)
-        self.end_headers()
+@app.get("/data")
+async def get_data():
+    # Simulate retrieving data from the device (replace with actual protocol as needed)
+    # Data is returned in CSV format
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow(DEVICE_DATA_POINTS)
+    writer.writerow([DEVICE_DATA[k] for k in DEVICE_DATA_POINTS])
+    output.seek(0)
+    return PlainTextResponse(content=output.read(), media_type="text/csv")
 
-    def do_POST(self):
-        if self.path == "/cmd":
-            content_length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(content_length).decode('utf-8')
-            response = device_conn.send_command(body.strip())
-            self._set_headers(200)
-            self.wfile.write(response.encode('utf-8'))
-        else:
-            self._set_headers(404)
-            self.wfile.write(b"Not Found")
-
-    def do_GET(self):
-        if self.path == "/data":
-            response = device_conn.get_data()
-            self._set_headers(200)
-            self.wfile.write(response.encode('utf-8'))
-        else:
-            self._set_headers(404)
-            self.wfile.write(b"Not Found")
-
-def run_server():
-    server_address = (SERVER_HOST, SERVER_PORT)
-    httpd = HTTPServer(server_address, SimpleHTTPRequestHandler)
-    print(f"HTTP server running at http://{SERVER_HOST}:{SERVER_PORT}/")
-    httpd.serve_forever()
+@app.post("/cmd")
+async def send_command(cmd_req: CommandRequest):
+    # Simulate sending a command to the device and getting a response
+    if cmd_req.command not in SUPPORTED_COMMANDS:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"error": "Unsupported command"}
+        )
+    # Simulated command execution
+    result = {"result": "success", "command": cmd_req.command, "params": cmd_req.params}
+    return JSONResponse(content=result)
 
 if __name__ == "__main__":
-    run_server()
+    uvicorn.run("main:app", host=SERVER_HOST, port=SERVER_PORT, reload=False)
